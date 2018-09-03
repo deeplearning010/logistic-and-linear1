@@ -1,0 +1,283 @@
+############### R BASICS #############################
+
+installed.packages()
+
+rm(list=ls())  #清除R工作环境中的所有内容
+#set the work directory
+setwd("C:/Users/Administrator/Desktop") 
+getwd()  
+
+install.packages("ggplot2") #安装包
+library(ggplot2)  #加载包
+
+##############Segmentation code ##########################
+
+#import raw data
+dat<-read.csv('practice_sample.csv',stringsAsFactors = F)
+str(dat)  #数据概览
+#data分布
+summary(dat)
+
+
+######Part1:数据探索
+sum(is.na(dat[,1:23]))#缺失值总数
+colSums(is.na(dat[,1:23]))  #显示每列的缺失值数量
+mean(!complete.cases(dat$AU002))  #显示缺失值比例 Question: Why use mean function?
+
+
+#数据探索-category变量
+install.packages('plyr')
+library(plyr)
+
+install.packages(c('VIM','mice'))
+library(VIM)
+
+library(mice)
+
+prof<-ddply(dat,.(XB851),summarise,cnt=length(consumer_profile_key))  #分组统计
+View(prof)
+
+a<-md.pattern(dat)
+View(a) 
+# 利用mice包中的md.pattern()函数，可得到一个信息列表，它的第一列是符合右边样式的行数，
+#最后一列表示缺失值个数，中间的列是dataframe的原有列（顺序会改变，由缺失数量由小到大排列），
+#它的下面使用1表示非缺失值，0表示缺失值。 
+
+
+aggr(dat$XB851,prop=F,number=T,cex.number=0.5)
+aggr(dat,prop=F,number=T,cex.number=0.5)
+#其中prop参数为是否以比例显示缺失数，T显示比例，F显示数值；numbers参数为是否显示数值标签，
+#aggr图显示一个缺失数量的； 
+
+#exercise: DS776
+
+#数据探索-numeric变量
+mean_var<-dat$AU002
+
+mean_AU002<-c(
+  var="AU002",
+  mean=mean(mean_var,na.rm=TRUE) ,   #na.rm=TRUE去除NA的影响
+  median=median(mean_var,na.rm=TRUE) ,
+  quantile(mean_var,c(0,0.01,0.1,0.25,0.5,0.75,0.9,0.99,1),na.rm=TRUE),
+  max=max(mean_var,na.rm=TRUE),
+  missing=sum(is.na(mean_var))
+)
+
+View(t(mean_AU002))
+
+#exercise: AU009
+
+######Part2:缺失值替换
+#dat1<-na.omit(dat)   #删除有缺失值的记录
+#dat2<-dat[complete.cases(dat),]   #删除有缺失值的记录
+
+dat$R2_XB851 <- ifelse(is.na(dat$XB851) == T,0,dat$XB851) # Question: How to check if missing value is imputed?
+summary(dat$XB851)
+summary(dat$R2_XB851)
+
+#exercise: AU002
+
+
+
+#subset 
+dat.sub<-dat[,substr(names(dat),1,3)=="R1_"] #只取R1开头的变量
+str(dat.sub)
+
+#Scaling
+dat.scale<-as.data.frame(scale(dat.sub))  #数据标准化 # Question: How to check if data is already standardized?
+View(dat.scale)
+
+scale(dat.sub)
+
+attr(scale(dat.sub),"scaled:center")
+attr(scale(dat.sub),"scaled:scale")
+
+colSums(dat.scale)  #列总和 Question: why check the total value of each column?
+colSums(dat[,1:22])
+
+#varclus
+install.packages('ClustOfVar')
+library(ClustOfVar)
+
+var.clus<-hclustvar(dat.sub[1:1000,])
+plot(var.clus)
+stab<-stability(var.clus,B=40) # B is the number of boostrap samples, calculate the mean value of the rand index
+plot(stab)
+stab$matCR
+boxplot(stab$matCR,main="Dispersion of the ajusted Rand index")
+p3<-cutreevar(var.clus,3)
+cluster<-p3$cluster
+View(cluster)
+
+princomp(dat.sub[,which(cluster==1)],cor=TRUE)$sdev^2
+princomp(dat.sub[,which(cluster==2)],cor=TRUE)$sdev^2
+princomp(dat.sub[,which(cluster==3)],cor=TRUE)$sdev^2
+
+
+p3<-cutreevar(var.clus,3,matsim=TRUE)
+print(p3)
+
+round(p3$sim$cluster1,digits = 2)
+
+p3$cluster
+p3$var
+
+######Part3: 聚类分析
+######Part3.1: K-Means
+
+#Should run the seed each time you run these codes below
+set.seed(12345) 
+cluster.km<-kmeans(dat.scale, centers=4,iter.max = 20)
+
+cluster.km$iter   #迭代次数
+cluster.km$size   #每类数量
+cluster.km$centers   #聚类中心
+table(cluster.km$cluster)  #每类数量
+
+cluster.km$totss    #总平方和  （总平方和=组内平方和+组间平方和）
+cluster.km$tot.withinss   #组内平方和的总和  （组内平方和越小越好，说明组内差异不大）
+cluster.km$betweenss   #组间平方和  （组间平方和越大越好，说明组间差异大）
+cluster.km$betweenss/cluster.km$totss  #组间平方和占总平方和的比例（又称R方，聚类优度），可用于进行聚类比较，该值越大表明组内差距越小，组间差距越大，即聚类效果越好
+
+
+#将聚类结果合并到原始数据上
+clus<-data.frame(cluster=cluster.km$cluster,dat.sub)
+#Cluster profiling 
+clus_profile<-aggregate(.~cluster,data=clus,FUN=mean)
+clus_profile
+
+
+
+#选择最佳聚类数
+#work on sampling data
+#by betweenss/totss
+set.seed(26987)
+dat.temp<-dat.sub[sample(nrow(dat.scale),2000,replace=F),]   #抽样 Question: Why use nrow function?
+
+results<-rep(1:20)  #比较不同聚类个数下的聚类优度
+for (k in 1:20)
+{
+  fit.km<-kmeans(dat.temp, centers=k,iter.max = 20)
+  results[k]<-fit.km$betweenss/fit.km$totss
+}
+round(results,2)
+
+plot(1:20, results, type="b", xlab="Number of Clusters",ylab="results")
+
+
+#by Silhouette Coefficient  #轮廓系数
+install.packages('fpc')
+library(fpc)
+K <- 2:8
+round <- 5 
+rst <- sapply(K, function(i){
+  print(paste("K=",i))
+  mean(sapply(1:round,function(r){
+    print(paste("Round",r))
+    result <- kmeans(dat.temp, i)
+    stats <- cluster.stats(dist(dat.temp), result$cluster)
+    stats$avg.silwidth
+  }))
+})
+
+plot(K,rst,type='l',main='Silhouette vs K', ylab='Silhouette')
+
+#做图（聚类优度和轮廓系数）
+cluster<-c(2:8)
+r<-results[2:8]
+sil<-rst
+plot(cluster,r,type='b',pch=16,lty=1,ylim=c(0.5,1),xlab='number of clusters',ylab='parameters')
+lines(cluster,sil,type='b',lty=2,pch=17)
+legend('topleft',inset=0.05,c('results','silhouette'),lty=c(1,2),pch=c(16,17))
+
+
+#by NbCluster，用多种指标来判断聚类个数，但运行速度较慢
+install.packages("NbClust")
+library(NbClust)
+
+#provide 30 index to determine optimal number of cluster
+set.seed(26987)
+nc.index<-NbClust(dat.temp, min.nc=3, max.nc=6, method="kmeans")  #从最小聚类数3遍历到最大聚类数6，通过评估指标看分别在聚类数为多少时达到最优，最后选择指标支持数最多的聚类数目为最佳聚类数目。
+nc.index$Best.nc
+barplot(table(nc.index$Best.nc[1,]), 
+        xlab="Numer of Clusters", ylab="Number of Criteria",
+        main="Number of Clusters Chosen by 26 Criteria")
+
+
+#####Part3.2:Hierarchical clustering
+set.seed(123)
+clus.x<-kmeans(dat.scale, centers=50,iter.max = 200,algorithm ="Lloyd") #algorithm为动态聚类的算法,默认为“Hartigan-Wong", 其他还有"Lloyd","Forgy", "MacQueen"
+clus.x$size
+hist(clus.x$size)
+
+clus.sub<-data.frame(cluster=clus.x$cluster,dat.sub)
+# get cluster means 
+clus.n50<-aggregate(.~cluster,data=clus.sub,FUN=mean) #按cluster进行分组统计均值
+head(clus.n50)
+
+clus.n50.scale<-scale(clus.n50[,-1])
+
+clus.dist<-dist(clus.n50.scale, method = "euclidean") # 距离矩阵
+clus.dist
+
+cluster.hc<-hclust(clus.dist) #默认method=complete最长距离法，其他还有最短距离法(single)，离差平方和法(wald)，重心法(centroid)，类平均法(average)等
+
+plot(cluster.hc) # 对聚类结果做树状图
+groups_k4<-cutree(cluster.hc, k=4) #利用剪枝函数中的参数k控制聚类个数为4
+table(groups_k4)
+groups_h10<-cutree(cluster.hc, h=10) #利用剪枝函数中的参数h控制距离为10
+table(groups_h10)
+
+plot(cluster.hc)
+rect.hclust(cluster.hc, k=4, border="red") #用红色矩形框在树状图中框出聚类个数为4的结果
+rect.hclust(cluster.hc, k=3, border="green") #用绿色矩形框在树状图中框出聚类个数为3的结果
+
+#层级聚类采用cophenetic distance用于度量聚类的效果.
+cop<-cophenetic(cluster.hc)  #cophenetic相关系数测量了原始距离与根据“树”估计的距离之间的相似性
+cor(cop, clus.dist)
+
+#绘制二元聚类图
+library(cluster) 
+
+
+par(mfrow = c(1,2))
+clusplot(clus.n50.scale, groups_k4, color=TRUE, shade=TRUE,labels=2, lines=0)
+clusplot(clus.n50.scale, groups_h10, color=TRUE, shade=TRUE,labels=2, lines=0)
+
+
+######Part3.3:Model Based Clustering
+#soft clustering
+library(mclust)
+cluster.mb<-Mclust(clus.n50.scale,G=4)  #进行EM聚类
+summary(cluster.mb) #显示聚类结果的信息汇总
+cluster.mb.bic<-mclustBIC(clus.n50.scale) #各聚类数下的BIC值
+summary(cluster.mb.bic)
+
+
+######课后练习
+#compare on the same data:iris
+data<-iris
+str(data)
+summary(data)
+table(data$Species)
+dat.test<-scale(iris[,1:4])
+head(dat.test)
+#Kmeans
+set.seed(12345)
+clus.kmeans<-kmeans(dat.test,3)
+# Hierarchical
+test.dist<-dist(dat.test, method = "euclidean") 
+clus.hc<-hclust(test.dist)
+#EM clustering
+clus.em<-Mclust(dat.test,G=3)
+
+#在图形上展现
+#多维标度分析，将多维空间的研究对象简化到低维空间进行定位
+mds = cmdscale(dist(dat.test,method="euclidean"))
+head(mds)
+#做图
+old.par <- par(mfrow = c(1,4))
+plot(mds, col=iris$Species, main='true class', pch = 19)
+plot(mds, col=clus.kmeans$cluster, main='Kmeans k=3', pch = 19)
+plot(mds, col=cutree(clus.hc, k=3), main='Hierarchical', pch = 19)
+plot(mds, col=clus.em$classification, main='EM clustering', pch = 19)
